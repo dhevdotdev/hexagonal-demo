@@ -1,183 +1,168 @@
 # Quick Start Guide
 
-## Prerequisites
+## Setup
 
-- PostgreSQL 18 installed and running
-- Go 1.25.6 installed
-- Database user `dhev` with password `dhev`
+### Prerequisites
+- PostgreSQL installed and running
+- Go 1.21+ installed
 
-## Setup (First Time)
-
-### Option 1: Automated Setup (Windows)
+### Initialize
 
 ```bash
-setup.bat
+# 1. Create database
+psql -U postgres -h localhost -c "CREATE DATABASE bookstore;"
+
+# 2. Run migrations
+psql -U postgres -h localhost -d bookstore -f migrations/001_create_books_table.sql
+
+# 3. Build
+go build -o bin/api cmd/api/main.go
+go build -o bin/cli cmd/cli/main.go
 ```
 
-This will:
-1. Create the `bookstore` database
-2. Run migrations
-3. Build the executables
+### Configuration (Optional)
 
-### Option 2: Manual Setup
+Set environment variables to override defaults:
 
-1. Create the database:
 ```bash
-psql -U dhev -h localhost -c "CREATE DATABASE bookstore;"
+export DB_HOST=localhost
+export DB_PORT=5432
+export DB_USER=postgres
+export DB_PASSWORD=postgres
+export DB_NAME=bookstore
+export SERVER_PORT=8080
 ```
 
-2. Run migrations:
+## Usage
+
+### CLI Commands
+
 ```bash
-psql -U dhev -h localhost -d bookstore -f migrations\001_create_books_table.sql
+# Create
+./bin/cli create "Clean Code" "Robert Martin" "978-0132350884"
+
+# List all
+./bin/cli list
+
+# Get specific
+./bin/cli get {book-id}
+
+# Update
+./bin/cli update {book-id} "New Title" "Author" "ISBN"
+
+# Delete
+./bin/cli delete {book-id}
 ```
 
-3. Build the applications:
+### HTTP API
+
+Start server:
 ```bash
-go build -o bin\api.exe cmd\api\main.go
-go build -o bin\cli.exe cmd\cli\main.go
+./bin/api
+# Server running on :8080
 ```
 
-## Running the Applications
+**Endpoints:**
 
-### HTTP API Server
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | /books | Create book |
+| GET | /books | List all books |
+| GET | /books/{id} | Get book |
+| PUT | /books/{id} | Update book |
+| DELETE | /books/{id} | Delete book |
+| GET | /health | Health check |
 
-Start the server:
+**Examples:**
+
 ```bash
-bin\api.exe
-```
+# Create
+curl -X POST http://localhost:8080/books \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Clean Code","author":"Robert Martin","isbn":"978-0132350884"}'
 
-The API will be available at `http://localhost:8080`
-
-#### API Endpoints
-
-**Create a book:**
-```bash
-curl -X POST http://localhost:8080/books ^
-  -H "Content-Type: application/json" ^
-  -d "{\"title\":\"Clean Code\",\"author\":\"Robert C. Martin\",\"isbn\":\"978-0132350884\"}"
-```
-
-**List all books:**
-```bash
+# List
 curl http://localhost:8080/books
-```
 
-**Get a specific book:**
-```bash
+# Get
 curl http://localhost:8080/books/{id}
-```
 
-**Update a book:**
-```bash
-curl -X PUT http://localhost:8080/books/{id} ^
-  -H "Content-Type: application/json" ^
-  -d "{\"title\":\"Updated Title\",\"author\":\"Robert C. Martin\",\"isbn\":\"978-0132350884\"}"
-```
+# Update
+curl -X PUT http://localhost:8080/books/{id} \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Updated","author":"Author","isbn":"ISBN"}'
 
-**Delete a book:**
-```bash
+# Delete
 curl -X DELETE http://localhost:8080/books/{id}
 ```
 
-### CLI Tool
+## Exploring the Code
 
-**Create a book:**
-```bash
-bin\cli.exe create "Clean Code" "Robert C. Martin" "978-0132350884"
-```
+### Start with the core
+1. Read `internal/domain/book.go` - Pure business logic
+2. Read `internal/ports/*.go` - Interface contracts
+3. Read `internal/application/book_service.go` - Use case implementation
 
-**List all books:**
-```bash
-bin\cli.exe list
-```
+### See how it connects
+4. Read `cmd/api/main.go` - Dependency injection
+5. Read `internal/adapters/http/handler.go` - HTTP adapter
+6. Read `internal/adapters/postgres/book_repository.go` - Database adapter
 
-**Get a specific book:**
-```bash
-bin\cli.exe get {id}
-```
+### Trace a request
+Start at `adapters/http/handler.go:CreateBook()` and follow the flow:
+1. HTTP adapter receives request
+2. Calls `BookService.CreateBook()` (port)
+3. Application service validates via domain
+4. Application service calls `BookRepository.Save()` (port)
+5. PostgreSQL adapter executes SQL
+6. Result flows back through the layers
 
-**Update a book:**
-```bash
-bin\cli.exe update {id} "New Title" "Robert C. Martin" "978-0132350884"
-```
+## Exercises
 
-**Delete a book:**
-```bash
-bin\cli.exe delete {id}
-```
+### Beginner
+1. Add a `PublishedYear` field to Book
+2. Add validation for the new field
+3. Update migrations, repository, and handlers
 
-## Example Workflow
+### Intermediate
+1. Create an in-memory repository for testing
+2. Implement "Find books by author" use case
+3. Add input validation in HTTP adapter
 
-```bash
-# 1. Create some books
-bin\cli.exe create "Clean Code" "Robert C. Martin" "978-0132350884"
-bin\cli.exe create "The Pragmatic Programmer" "Andy Hunt" "978-0135957059"
-bin\cli.exe create "Design Patterns" "Gang of Four" "978-0201633610"
-
-# 2. List all books
-bin\cli.exe list
-
-# 3. Get a specific book (copy ID from list output)
-bin\cli.exe get 67462a14-26b7-44ec-9dac-af367ea174eb
-
-# 4. Start the HTTP API in another terminal
-bin\api.exe
-
-# 5. In another terminal, test the HTTP API
-curl http://localhost:8080/books
-```
-
-## Configuration
-
-Environment variables (optional):
-
-- `DB_HOST` - Database host (default: `localhost`)
-- `DB_PORT` - Database port (default: `5432`)
-- `DB_USER` - Database user (default: `dhev`)
-- `DB_PASSWORD` - Database password (default: `dhev`)
-- `DB_NAME` - Database name (default: `bookstore`)
-- `SERVER_PORT` - HTTP server port (default: `8080`)
-
-Example:
-```bash
-set DB_HOST=192.168.1.100
-set SERVER_PORT=3000
-bin\api.exe
-```
-
-## Understanding the Code
-
-Read the documentation in order:
-
-1. **README.md** - Overview and architecture diagrams
-2. **ARCHITECTURE.md** - Deep dive into hexagonal architecture
-3. **Code tour**:
-   - `internal/domain/book.go` - Start here: Pure business logic
-   - `internal/ports/` - Interfaces (contracts)
-   - `internal/application/book_service.go` - Use case implementation
-   - `internal/adapters/` - Infrastructure implementations
-   - `cmd/api/main.go` or `cmd/cli/main.go` - See how it all wires together
+### Advanced
+1. Add a caching layer (decorator pattern)
+2. Implement a gRPC adapter
+3. Add event publishing when books are created
+4. Implement soft deletes
 
 ## Troubleshooting
 
-**Cannot connect to database:**
-- Check PostgreSQL is running: `psql -U dhev -h localhost`
-- Verify database exists: `psql -U dhev -h localhost -c "\l"`
-- Check pgpass.conf has correct credentials
+**Database connection failed:**
+```bash
+# Check PostgreSQL is running
+psql -U postgres -h localhost
+
+# Verify database exists
+psql -U postgres -h localhost -l | grep bookstore
+```
 
 **Build errors:**
-- Run `go mod tidy` to clean up dependencies
-- Ensure Go 1.21+ is installed
+```bash
+# Clean and rebuild
+go mod tidy
+go build ./...
+```
 
 **Port already in use:**
-- Change the port: `set SERVER_PORT=3000`
-- Or stop other services using port 8080
+```bash
+# Change the port
+export SERVER_PORT=3000
+./bin/api
+```
 
 ## Next Steps
 
-1. Try adding a new field to `Book` (e.g., `PublishYear`)
-2. Implement a new adapter (e.g., in-memory repository for testing)
-3. Add a new use case (e.g., search books by author)
-4. Add another inbound adapter (e.g., WebSocket)
-
-The beauty of hexagonal architecture: You can extend without breaking existing code!
+- Read [README.md](README.md) for architecture overview
+- Read [ARCHITECTURE.md](ARCHITECTURE.md) for deep dive
+- Experiment with adding new features
+- Try swapping adapters (e.g., add MongoDB)

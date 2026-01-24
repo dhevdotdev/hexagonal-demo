@@ -7,7 +7,7 @@ echo ========================================
 echo.
 
 echo Step 1: Creating database...
-psql -U dhev -h localhost -c "CREATE DATABASE bookstore;" 2>nul
+psql -U postgres -h localhost -c "CREATE DATABASE bookstore;" 2>nul
 if %ERRORLEVEL% EQU 0 (
     echo Database 'bookstore' created successfully!
 ) else (
@@ -16,7 +16,7 @@ if %ERRORLEVEL% EQU 0 (
 echo.
 
 echo Step 2: Running migrations...
-psql -U dhev -h localhost -d bookstore -f migrations\001_create_books_table.sql
+psql -U postgres -h localhost -d bookstore -f migrations\001_create_books_table.sql
 if %ERRORLEVEL% EQU 0 (
     echo Migrations applied successfully!
 ) else (

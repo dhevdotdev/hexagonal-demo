@@ -19,8 +19,8 @@ func main() {
 	// Configuration
 	dbHost := getEnv("DB_HOST", "localhost")
 	dbPort := getEnv("DB_PORT", "5432")
-	dbUser := getEnv("DB_USER", "dhev")
-	dbPassword := getEnv("DB_PASSWORD", "dhev")
+	dbUser := getEnv("DB_USER", "postgres")
+	dbPassword := getEnv("DB_PASSWORD", "postgres")
 	dbName := getEnv("DB_NAME", "bookstore")
 	serverPort := getEnv("SERVER_PORT", "8080")
 

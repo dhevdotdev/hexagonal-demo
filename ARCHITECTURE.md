@@ -1,465 +1,416 @@
-# Hexagonal Architecture Deep Dive
+# Architecture Deep Dive
 
-## Understanding Ports and Adapters
+Advanced concepts and patterns for hexagonal architecture implementation.
 
-This document provides an in-depth explanation of the Hexagonal Architecture pattern as implemented in this project.
+## The Dependency Rule
 
-## The Hexagon Metaphor
-
-Imagine your business logic as a **hexagon** sitting in the center. The number of sides doesn't matter (it could be a circle), but the hexagon shape emphasizes that:
-
-1. **All sides are equal** - No side is more important than another
-2. **Multiple connection points** - You can have many adapters connected to your core
-3. **Symmetry** - Inbound and outbound are treated similarly
-
-```
-        [HTTP Adapter]
-              |
-              | (calls)
-              v
-        [BookService Port] <--- INBOUND PORT
-              |
-              | (implemented by)
-              v
-    ╔═══════════════════════════════╗
-    ║                               ║
-    ║   APPLICATION SERVICE         ║
-    ║   (Business Logic)            ║
-    ║   - CreateBook()              ║
-    ║   - GetBook()                 ║
-    ║   - etc.                      ║
-    ║                               ║
-    ╚═══════════════════════════════╝
-              |
-              | (calls)
-              v
-        [Repository Port] <--- OUTBOUND PORT
-              |
-              | (implemented by)
-              v
-        [PostgreSQL Adapter]
-              |
-              v
-          [Database]
+```mermaid
+graph LR
+    Adapters[Adapters<br/>Outer Layer] -->|depend on| Ports[Ports<br/>Boundary]
+    Ports -->|depend on| App[Application<br/>Inner Layer]
+    App -->|depend on| Domain[Domain<br/>Core]
+    
+    style Domain fill:#4CAF50
+    style App fill:#66BB6A
+    style Ports fill:#FFA726
+    style Adapters fill:#42A5F5
 ```
 
-## Detailed Component Breakdown
+**Rule**: Dependencies always point INWARD. The domain has zero dependencies.
 
-### 1. Domain Layer (The Core)
+## Layer Responsibilities
 
-**Location**: `internal/domain/`
-
-**Purpose**: Contains pure business logic with ZERO external dependencies.
-
-**Key Characteristics**:
-- No imports from infrastructure packages
-- No database, HTTP, or framework code
-- Just business entities and rules
-- Can be tested without any external systems
-
-**In Our Example** (`book.go`):
+### Domain Layer
+**What**: Pure business entities and validation  
+**Dependencies**: None  
+**Example**:
 ```go
-type Book struct {
-    ID        string
-    Title     string
-    Author    string
-    ISBN      string
-    CreatedAt time.Time
-    UpdatedAt time.Time
-}
-
 func NewBook(title, author, isbn string) (*Book, error) {
-    // Validation logic here
-    // Business rules enforced here
+    if title == "" {
+        return nil, ErrInvalidTitle
+    }
+    if !isValidISBN(isbn) {
+        return nil, ErrInvalidISBN
+    }
+    return &Book{ID: uuid.New().String(), Title: title, ...}, nil
 }
 ```
 
-**Why This Matters**:
-- If we switch from PostgreSQL to MongoDB, this code doesn't change
-- If we move from HTTP to gRPC, this code doesn't change
-- We can test business logic in pure Go without any mocks
+### Ports Layer
+**What**: Interface contracts  
+**Dependencies**: Domain only  
+**Two types**:
 
-### 2. Ports (The Boundaries)
-
-**Location**: `internal/ports/`
-
-**Purpose**: Define contracts (interfaces) between core and outside world.
-
-#### 2.1 Inbound Ports (Driving Ports)
-
-**What**: Interfaces that define what your application CAN DO (use cases)
-
-**Who calls them**: Adapters (HTTP handlers, CLI, etc.)
-
-**Who implements them**: Application service layer
-
-**In Our Example** (`service.go`):
+**Inbound (Driving)**: What app CAN DO
 ```go
 type BookService interface {
-    CreateBook(title, author, isbn string) (*domain.Book, error)
-    GetBook(id string) (*domain.Book, error)
-    // ... other use cases
+    CreateBook(title, author, isbn string) (*Book, error)
 }
 ```
 
-**Flow**:
-```
-HTTP Request → HTTP Adapter → BookService Port → Application Service
-```
-
-#### 2.2 Outbound Ports (Driven Ports)
-
-**What**: Interfaces that define what your application NEEDS (dependencies)
-
-**Who calls them**: Application service layer
-
-**Who implements them**: Infrastructure adapters (database, external APIs, etc.)
-
-**In Our Example** (`repository.go`):
+**Outbound (Driven)**: What app NEEDS
 ```go
 type BookRepository interface {
-    Save(book *domain.Book) error
-    FindByID(id string) (*domain.Book, error)
-    // ... other persistence operations
+    Save(book *Book) error
 }
 ```
 
-**Flow**:
-```
-Application Service → Repository Port → PostgreSQL Adapter → Database
-```
-
-### 3. Application Layer
-
-**Location**: `internal/application/`
-
-**Purpose**: Orchestrates business logic and coordinates between domain and ports.
-
-**Key Characteristics**:
-- Implements inbound ports
-- Depends on outbound ports (interfaces, not implementations!)
-- Contains use case logic
-- Thin layer - mostly coordination
-
-**In Our Example** (`book_service.go`):
+### Application Layer
+**What**: Use case orchestration  
+**Dependencies**: Domain + Ports  
+**Example**:
 ```go
-type bookService struct {
-    repo ports.BookRepository  // Depends on INTERFACE, not concrete type
-}
-
-func (s *bookService) CreateBook(title, author, isbn string) (*domain.Book, error) {
-    // 1. Use domain factory
-    book, err := domain.NewBook(title, author, isbn)
+func (s *bookService) CreateBook(title, author, isbn string) (*Book, error) {
+    book, err := domain.NewBook(title, author, isbn) // Domain creates
     if err != nil {
         return nil, err
     }
-    
-    // 2. Save via repository port
-    if err := s.repo.Save(book); err != nil {
-        return nil, err
-    }
-    
-    return book, nil
+    return book, s.repo.Save(book) // Port saves
 }
 ```
 
-**Notice**: The application service has NO IDEA it's talking to PostgreSQL. It could be MySQL, MongoDB, in-memory storage - it doesn't care!
-
-### 4. Adapters (The Outside World)
-
-**Location**: `internal/adapters/`
-
-**Purpose**: Connect external systems to your core application.
-
-#### 4.1 Inbound Adapters (Driving Adapters)
-
-**Examples**: HTTP REST API, CLI, gRPC, GraphQL
-
-**In Our Project**:
-- **HTTP** (`adapters/http/handler.go`): Translates HTTP requests to service calls
-- **CLI** (`adapters/cli/commands.go`): Translates command-line args to service calls
-
-**HTTP Adapter Example**:
+### Adapter Layer
+**What**: Infrastructure implementation  
+**Dependencies**: Ports + Application  
+**Example**:
 ```go
-func (h *BookHandler) CreateBook(w http.ResponseWriter, r *http.Request) {
-    // 1. Parse HTTP request
-    var req CreateBookRequest
-    json.NewDecoder(r.Body).Decode(&req)
-    
-    // 2. Call service (through port)
-    book, err := h.service.CreateBook(req.Title, req.Author, req.ISBN)
-    
-    // 3. Return HTTP response
-    respondWithJSON(w, http.StatusCreated, toBookResponse(book))
-}
-```
-
-**Key Point**: HTTP adapter converts HTTP-specific data to/from domain models.
-
-#### 4.2 Outbound Adapters (Driven Adapters)
-
-**Examples**: Database clients, External APIs, Message queues, File systems
-
-**In Our Project**:
-- **PostgreSQL** (`adapters/postgres/book_repository.go`): Implements repository port
-
-**PostgreSQL Adapter Example**:
-```go
-func (r *bookRepository) Save(book *domain.Book) error {
-    query := `INSERT INTO books (...) VALUES (...)`
-    _, err := r.db.Exec(query, book.ID, book.Title, ...)
+func (r *postgresRepo) Save(book *Book) error {
+    _, err := r.db.Exec("INSERT INTO books...", book.ID, book.Title, ...)
     return err
 }
 ```
 
-**Key Point**: PostgreSQL adapter converts domain models to/from database rows.
+## Request Flow
 
-## The Dependency Rule
-
-**Critical Rule**: Dependencies point INWARD, never outward.
-
-```
-Adapters (outer) → Ports (boundary) → Application (inner) → Domain (core)
-```
-
-### What This Means:
-
-1. **Domain** depends on nothing
-2. **Application** depends on Domain and Ports
-3. **Adapters** depend on Ports and Application
-4. **Ports** depend on Domain
-
-### Why This Matters:
-
-If you want to:
-- Change HTTP framework (gin → echo) → Only modify HTTP adapter
-- Switch databases (PostgreSQL → MongoDB) → Only modify database adapter
-- Add new interface (gRPC) → Add new adapter, core unchanged
-- Change business rules → Only modify domain/application
-
-## Dependency Injection (DI)
-
-**Where it happens**: In `main.go`
-
-**What it does**: Wires everything together (assembles the hexagon)
-
-```go
-func main() {
-    // 1. Create outbound adapter (infrastructure)
-    db := connectToPostgreSQL()
-    bookRepo := postgres.NewBookRepository(db)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Adapter as HTTP/CLI Adapter
+    participant Port as Service Port
+    participant App as Application
+    participant Domain
+    participant RepoPort as Repo Port
+    participant DB as Database Adapter
     
-    // 2. Create application service (inject repository)
-    bookService := application.NewBookService(bookRepo)
-    
-    // 3. Create inbound adapter (inject service)
-    bookHandler := http.NewBookHandler(bookService)
-    
-    // 4. Start server
-    startHTTPServer(bookHandler)
-}
+    Client->>Adapter: Request (HTTP/CLI)
+    Adapter->>Port: Call method
+    Port->>App: Execute use case
+    App->>Domain: Apply business rules
+    Domain-->>App: Validated entity
+    App->>RepoPort: Persist
+    RepoPort->>DB: Save
+    DB-->>RepoPort: Result
+    RepoPort-->>App: Result
+    App-->>Port: Result
+    Port-->>Adapter: Result
+    Adapter-->>Client: Response
 ```
 
-**Notice the direction**:
-```
-main.go knows about everything
-  ↓
-HTTP adapter knows about ports.BookService interface
-  ↓
-Application service knows about ports.BookRepository interface
-  ↓
-Domain knows about nothing
-```
+**Key Points**:
+1. Client never talks directly to business logic
+2. Adapters translate between external format and domain
+3. Business logic only sees domain objects
+4. Infrastructure details isolated in adapters
 
 ## Testing Strategy
 
-### Unit Testing Domain
+```mermaid
+graph TB
+    subgraph "Unit Tests"
+        DomainTest[Test Domain<br/>No mocks]
+        AppTest[Test Application<br/>Mock repository]
+    end
+    
+    subgraph "Integration Tests"
+        AdapterTest[Test Adapters<br/>Real infrastructure]
+    end
+    
+    DomainTest --> Domain[domain/book.go]
+    AppTest --> App[application/service.go]
+    AdapterTest --> Adapter[adapters/postgres]
+    
+    style DomainTest fill:#4CAF50
+    style AppTest fill:#66BB6A
+    style AdapterTest fill:#FFA726
+```
 
+**Domain Tests** - Pure logic, no infrastructure:
 ```go
-func TestNewBook(t *testing.T) {
-    book, err := domain.NewBook("Clean Code", "Robert Martin", "978-0132350884")
-    // No database, no HTTP, no mocks needed!
-    assert.NoError(t, err)
-    assert.NotEmpty(t, book.ID)
+func TestBookValidation(t *testing.T) {
+    _, err := domain.NewBook("", "Author", "ISBN")
+    assert.Error(t, err, "empty title should fail")
 }
 ```
 
-### Unit Testing Application Service
-
+**Application Tests** - Mock outbound ports:
 ```go
-func TestBookService_CreateBook(t *testing.T) {
-    // Mock the repository port
-    mockRepo := &MockBookRepository{}
-    service := application.NewBookService(mockRepo)
-    
-    // Test the use case
-    book, err := service.CreateBook("Title", "Author", "ISBN")
-    
-    assert.NoError(t, err)
-    assert.Equal(t, 1, mockRepo.SaveCallCount)
+type MockRepo struct {
+    SaveCalled bool
+}
+
+func (m *MockRepo) Save(*Book) error {
+    m.SaveCalled = true
+    return nil
+}
+
+func TestCreateBook(t *testing.T) {
+    repo := &MockRepo{}
+    svc := NewBookService(repo)
+    _, _ = svc.CreateBook("Title", "Author", "ISBN")
+    assert.True(t, repo.SaveCalled)
 }
 ```
 
-### Integration Testing Adapters
-
+**Adapter Tests** - Real infrastructure:
 ```go
-func TestPostgreSQLAdapter(t *testing.T) {
-    // Use real database (testcontainers)
-    db := setupTestDB()
+func TestPostgresRepository(t *testing.T) {
+    db := setupTestDatabase()
     repo := postgres.NewBookRepository(db)
     
     book := &domain.Book{...}
     err := repo.Save(book)
-    
     assert.NoError(t, err)
+    
+    found, _ := repo.FindByID(book.ID)
+    assert.Equal(t, book.Title, found.Title)
 }
 ```
 
-## Real-World Benefits
+## Extending the System
 
-### Scenario 1: Adding gRPC Support
+### Adding a New Interface (gRPC)
 
-**Without Hexagonal Architecture**:
-- Business logic mixed in HTTP handlers
-- Need to rewrite everything for gRPC
-- Risk of bugs in business logic
+```mermaid
+graph LR
+    HTTP[HTTP Adapter] --> Service[BookService Port]
+    CLI[CLI Adapter] --> Service
+    GRPC[gRPC Adapter<br/>NEW] -.->|add| Service
+    Service --> App[Application]
+    
+    style GRPC fill:#81C784
+```
 
-**With Hexagonal Architecture**:
+**Steps**:
+1. Create `adapters/grpc/handler.go`
+2. Implement gRPC service using `BookService` port
+3. Wire in `main.go`
+
+**Code**:
 ```go
-// 1. Create gRPC adapter (new file)
 type BookGRPCService struct {
-    service ports.BookService
+    service ports.BookService // same interface!
 }
 
-func (g *BookGRPCService) CreateBook(ctx context.Context, req *pb.CreateBookRequest) (*pb.BookResponse, error) {
+func (g *BookGRPCService) CreateBook(ctx context.Context, req *pb.CreateBookRequest) (*pb.Book, error) {
     book, err := g.service.CreateBook(req.Title, req.Author, req.ISBN)
-    // Convert to protobuf and return
+    return toProto(book), err
 }
-
-// 2. In main.go, wire it up
-grpcService := grpc.NewBookGRPCService(bookService)
-startGRPCServer(grpcService)
 ```
 
-**Result**: Added gRPC without touching core business logic!
+### Switching Databases (MongoDB)
 
-### Scenario 2: Switch from PostgreSQL to MongoDB
+```mermaid
+graph TB
+    App[Application] --> Repo[BookRepository Port]
+    Repo --> PG[PostgreSQL Adapter]
+    Repo -.->|switch| Mongo[MongoDB Adapter<br/>NEW]
+    
+    style Mongo fill:#81C784
+```
 
-**Change required**:
-1. Create new adapter: `adapters/mongodb/book_repository.go`
-2. Implement `ports.BookRepository` interface
-3. In `main.go`, swap: `postgres.NewBookRepository(db)` → `mongodb.NewBookRepository(client)`
+**Steps**:
+1. Create `adapters/mongodb/repository.go`
+2. Implement `BookRepository` interface
+3. Change one line in `main.go`
 
-**Result**: Zero changes to business logic!
-
-### Scenario 3: Add Caching
-
+**Code**:
 ```go
-// Create caching adapter that wraps repository
-type CachedBookRepository struct {
+// adapters/mongodb/repository.go
+type mongoRepo struct {
+    collection *mongo.Collection
+}
+
+func (r *mongoRepo) Save(book *domain.Book) error {
+    _, err := r.collection.InsertOne(context.Background(), book)
+    return err
+}
+
+// main.go - only this changes:
+// repo := postgres.NewBookRepository(db)
+repo := mongodb.NewBookRepository(client)
+```
+
+### Adding Caching
+
+```mermaid
+graph LR
+    App[Application] --> Repo[Repository Port]
+    Repo --> Cache[Caching Wrapper]
+    Cache --> PG[PostgreSQL]
+    Cache --> Redis[Redis]
+    
+    style Cache fill:#81C784
+```
+
+**Decorator pattern**:
+```go
+type CachedRepository struct {
     repo  ports.BookRepository
     cache Cache
 }
 
-func (c *CachedBookRepository) FindByID(id string) (*domain.Book, error) {
-    // Check cache first
+func (c *CachedRepository) FindByID(id string) (*domain.Book, error) {
     if book := c.cache.Get(id); book != nil {
         return book, nil
     }
     
-    // Call underlying repository
     book, err := c.repo.FindByID(id)
     if err == nil {
         c.cache.Set(id, book)
     }
     return book, err
 }
+
+// In main.go:
+baseRepo := postgres.NewBookRepository(db)
+cachedRepo := NewCachedRepository(baseRepo, redisCache)
+service := application.NewBookService(cachedRepo)
 ```
 
-**Result**: Added caching by wrapping existing adapter!
+## Common Mistakes
 
-## Common Pitfalls
-
-### ❌ Don't Do This:
-
-**1. Domain importing database packages**:
+### ❌ Domain importing infrastructure
 ```go
-package domain
+// domain/book.go
+import "database/sql" // WRONG!
+```
 
-import "database/sql"  // WRONG!
+### ❌ Adapter-to-adapter calls
+```go
+// adapters/http/handler.go
+import "myapp/adapters/postgres" // WRONG!
 
-type Book struct {
-    db *sql.DB  // WRONG!
+func (h *Handler) Create() {
+    repo := postgres.NewRepo() // WRONG!
 }
 ```
 
-**2. HTTP logic in domain**:
+### ❌ Business logic in adapters
 ```go
-package domain
-
-import "net/http"  // WRONG!
-
-func (b *Book) HandleHTTP(w http.ResponseWriter) {  // WRONG!
+// adapters/http/handler.go
+func (h *Handler) CreateBook(w http.ResponseWriter, r *http.Request) {
+    if req.Title == "" { // WRONG! This is business logic
+        return
+    }
 }
 ```
 
-**3. Direct adapter-to-adapter calls**:
+### ✅ Correct approach
 ```go
-package http
+// domain/book.go
+func NewBook(title string) (*Book, error) {
+    if title == "" { // Business logic in domain
+        return nil, ErrInvalidTitle
+    }
+    return &Book{Title: title}, nil
+}
 
-import "myapp/adapters/postgres"  // WRONG!
-
-func (h *Handler) CreateBook() {
-    repo := postgres.NewBookRepository()  // WRONG!
-    repo.Save(book)
+// adapters/http/handler.go
+func (h *Handler) CreateBook(w http.ResponseWriter, r *http.Request) {
+    book, err := h.service.CreateBook(req.Title, ...) // Delegate to service
+    if err != nil {
+        respondWithError(w, err) // Adapter handles HTTP concerns
+    }
 }
 ```
 
-### ✅ Do This Instead:
+## Real-World Benefits
 
-**1. Domain is pure**:
+**Before**: Tight coupling
 ```go
-package domain
+type BookController struct {
+    db *sql.DB // Directly coupled to database
+}
 
-type Book struct {
-    ID     string
-    Title  string
-    // No infrastructure!
+func (c *BookController) HandleCreate(w http.ResponseWriter, r *http.Request) {
+    // Parse HTTP
+    var req CreateRequest
+    json.NewDecoder(r.Body).Decode(&req)
+    
+    // Business logic mixed with infrastructure
+    if req.Title == "" {
+        http.Error(w, "invalid", 400)
+        return
+    }
+    
+    // Direct SQL
+    _, err := c.db.Exec("INSERT INTO books...", req.Title, req.Author)
+    if err != nil {
+        http.Error(w, err.Error(), 500)
+        return
+    }
+    
+    // Return HTTP response
+    w.WriteHeader(201)
 }
 ```
 
-**2. Adapters stay at the edges**:
-```go
-package http
+**Problems**:
+- Can't test business logic without HTTP and database
+- Can't reuse logic for CLI or gRPC
+- Can't swap database without rewriting controller
+- Business rules scattered across controllers
 
-type BookHandler struct {
-    service ports.BookService  // Depend on PORT, not concrete adapter
+**After**: Hexagonal architecture
+```go
+// Domain: Pure business logic
+func NewBook(title, author, isbn string) (*Book, error) {
+    if title == "" {
+        return nil, ErrInvalidTitle
+    }
+    return &Book{...}, nil
+}
+
+// Application: Use case
+func (s *service) CreateBook(title, author, isbn string) (*Book, error) {
+    book, err := domain.NewBook(title, author, isbn)
+    if err != nil {
+        return nil, err
+    }
+    return book, s.repo.Save(book)
+}
+
+// HTTP Adapter: Infrastructure
+func (h *handler) CreateBook(w http.ResponseWriter, r *http.Request) {
+    var req CreateRequest
+    json.NewDecoder(r.Body).Decode(&req)
+    
+    book, err := h.service.CreateBook(req.Title, req.Author, req.ISBN)
+    if err != nil {
+        respondWithError(w, 400, err.Error())
+        return
+    }
+    
+    respondWithJSON(w, 201, book)
 }
 ```
 
-**3. Wire in main.go**:
-```go
-func main() {
-    repo := postgres.NewBookRepository(db)
-    service := application.NewBookService(repo)
-    handler := http.NewBookHandler(service)
-}
-```
+**Benefits**:
+- Business logic testable in pure Go
+- Same logic works for HTTP, CLI, gRPC
+- Swap database by changing one line
+- Business rules centralized in domain
 
 ## Summary
 
-**Hexagonal Architecture** = **Ports & Adapters**
+**Hexagonal Architecture** separates **what** your system does (business logic) from **how** it does it (infrastructure).
 
-- **Ports**: Interfaces defining contracts
-  - Inbound: What your app can DO
-  - Outbound: What your app NEEDS
-  
-- **Adapters**: Implementations connecting to external systems
-  - Inbound: HTTP, CLI, gRPC (drive your app)
-  - Outbound: Database, APIs (driven by your app)
+**Key principles**:
+1. Dependencies point inward
+2. Domain has zero dependencies
+3. Ports define contracts
+4. Adapters implement details
+5. Wire everything in main
 
-- **Core Principle**: Business logic is independent of infrastructure
-
-- **Key Rule**: Dependencies point INWARD
-
-**Result**: Flexible, testable, maintainable applications!
+**Result**: Flexible, testable, maintainable systems that adapt to changing requirements.
